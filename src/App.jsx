@@ -502,6 +502,14 @@ export default function App() {
            class "hidden" tidak pernah di-override)
       ======================================= */}
       <style>{`
+        /* ==== NYAMAN DI HP (Android & iPhone) ==== */
+        html, body { overscroll-behavior-y: none; }        /* cegah refresh tak sengaja saat kasir sibuk */
+        button { touch-action: manipulation; }              /* tap responsif tanpa delay/zoom dobel */
+        @supports (height: 100dvh) { .app-root { height: 100dvh; } } /* tinggi ikut address bar mobile */
+        @media (max-width: 640px) {
+          input, select, textarea { font-size: 16px !important; } /* cegah iOS auto-zoom saat fokus input */
+        }
+
         @media print {
           @page { margin: 0; size: 58mm auto; }
           html, body { width: 58mm; margin: 0; padding: 2mm; background-color: white; color: black; }
@@ -512,10 +520,10 @@ export default function App() {
       `}</style>
 
       {/* HEADER UTAMA */}
-      <header className="bg-[#2b1b17] text-white p-4 shadow-md flex items-center justify-between z-10 print-hidden">
-        <div className="flex items-center gap-3">
-          <img src={logo} alt="Logo Kopi Lorong" className="w-10 h-10 rounded-full object-cover ring-2 ring-[#8b5a2b]/70 shadow-md bg-[#252120]" />
-          <h1 className="text-xl font-bold tracking-wider">KOPI LORONG</h1>
+      <header className="bg-[#2b1b17] text-white p-3 sm:p-4 shadow-md flex items-center justify-between z-10 print-hidden">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <img src={logo} alt="Logo Kopi Lorong" className="w-9 h-9 sm:w-10 sm:h-10 rounded-full object-cover ring-2 ring-[#8b5a2b]/70 shadow-md bg-[#252120] flex-shrink-0" />
+          <h1 className="text-base sm:text-xl font-bold tracking-wider truncate">KOPI LORONG</h1>
         </div>
         <div className="flex items-center gap-2">
           <span
@@ -533,7 +541,7 @@ export default function App() {
           </span>
           <button 
             onClick={() => setViewMode(viewMode === 'pos' ? 'dashboard' : 'pos')}
-            className="bg-white/20 px-4 py-2 rounded-lg text-sm font-bold border border-white/30 hover:bg-white/30 transition-colors"
+            className="bg-white/20 px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-bold border border-white/30 hover:bg-white/30 transition-colors flex-shrink-0"
           >
             {viewMode === 'pos' ? '⚙️ Dashboard' : '← Mode Kasir'}
           </button>
@@ -601,7 +609,7 @@ export default function App() {
 
           {/* KERANJANG (CART) BAWAH */}
           {cart.length > 0 && (
-            <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-4 shadow-[0_-10px_15px_-3px_rgba(0,0,0,0.1)] print-hidden z-20">
+            <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-[0_-10px_15px_-3px_rgba(0,0,0,0.1)] print-hidden z-20">
               <div className="max-h-[30vh] overflow-y-auto mb-3 space-y-2 pr-2">
                 {cart.map(item => (
                   <div key={item.id} className="flex justify-between items-center bg-gray-50 p-2 rounded-lg border">
@@ -665,7 +673,7 @@ export default function App() {
                   <button onClick={addMenu} className="bg-green-600 text-white px-3 py-1.5 rounded-lg text-sm font-bold shadow-sm hover:bg-green-700">+ Menu Baru</button>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full text-sm text-left">
+                  <table className="w-full text-sm text-left min-w-[640px]">
                     <thead className="bg-gray-50 border-b">
                       <tr>
                         <th className="p-3">Nama Menu</th>
@@ -814,32 +822,89 @@ export default function App() {
               </div>
             )}
 
-            {/* TAB: SETING STRUK */}
+            {/* TAB: SETING STRUK (dengan pratinjau live) */}
             {dashboardTab === 'receipt' && (
-              <div className="max-w-md mx-auto bg-white rounded-xl shadow-sm border p-5">
-                <h3 className="font-bold text-lg mb-4 text-center">Desain Struk Thermal</h3>
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-bold text-gray-600 mb-1">Alamat Kedai / Cabang</label>
-                    <input type="text" value={receiptConfig.address} onChange={(e) => handleReceiptChange('address', e.target.value)} className="w-full p-2 border rounded-md focus:ring-1 focus:ring-[#8b5a2b] bg-gray-50 text-sm" />
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
+              <div className="max-w-4xl mx-auto grid md:grid-cols-2 gap-4 items-start">
+                <div className="bg-white rounded-xl shadow-sm border p-5">
+                  <h3 className="font-bold text-lg mb-4 text-center">Desain Struk Thermal</h3>
+                  <div className="space-y-4">
                     <div>
-                      <label className="block text-xs font-bold text-gray-600 mb-1">WIFI SSID</label>
-                      <input type="text" value={receiptConfig.wifiSsid} onChange={(e) => handleReceiptChange('wifiSsid', e.target.value)} className="w-full p-2 border rounded-md focus:ring-1 focus:ring-[#8b5a2b] bg-gray-50 text-sm" placeholder="Kosongkan jika tidak ada" />
+                      <label className="block text-xs font-bold text-gray-600 mb-1">Alamat Kedai / Cabang</label>
+                      <input type="text" value={receiptConfig.address} onChange={(e) => handleReceiptChange('address', e.target.value)} className="w-full p-2 border rounded-md focus:ring-1 focus:ring-[#8b5a2b] bg-gray-50 text-sm" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-bold text-gray-600 mb-1">WIFI SSID</label>
+                        <input type="text" value={receiptConfig.wifiSsid} onChange={(e) => handleReceiptChange('wifiSsid', e.target.value)} className="w-full p-2 border rounded-md focus:ring-1 focus:ring-[#8b5a2b] bg-gray-50 text-sm" placeholder="Kosongkan jika tidak ada" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-600 mb-1">WIFI Password</label>
+                        <input type="text" value={receiptConfig.wifiPass} onChange={(e) => handleReceiptChange('wifiPass', e.target.value)} className="w-full p-2 border rounded-md focus:ring-1 focus:ring-[#8b5a2b] bg-gray-50 text-sm" />
+                      </div>
                     </div>
                     <div>
-                      <label className="block text-xs font-bold text-gray-600 mb-1">WIFI Password</label>
-                      <input type="text" value={receiptConfig.wifiPass} onChange={(e) => handleReceiptChange('wifiPass', e.target.value)} className="w-full p-2 border rounded-md focus:ring-1 focus:ring-[#8b5a2b] bg-gray-50 text-sm" />
+                      <label className="block text-xs font-bold text-gray-600 mb-1">Sosial Media</label>
+                      <input type="text" value={receiptConfig.socialMedia} onChange={(e) => handleReceiptChange('socialMedia', e.target.value)} className="w-full p-2 border rounded-md focus:ring-1 focus:ring-[#8b5a2b] bg-gray-50 text-sm" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-600 mb-1">Pesan Penutup</label>
+                      <input type="text" value={receiptConfig.footerMessage} onChange={(e) => handleReceiptChange('footerMessage', e.target.value)} className="w-full p-2 border rounded-md focus:ring-1 focus:ring-[#8b5a2b] bg-gray-50 text-sm" />
                     </div>
                   </div>
-                  <div>
-                    <label className="block text-xs font-bold text-gray-600 mb-1">Sosial Media</label>
-                    <input type="text" value={receiptConfig.socialMedia} onChange={(e) => handleReceiptChange('socialMedia', e.target.value)} className="w-full p-2 border rounded-md focus:ring-1 focus:ring-[#8b5a2b] bg-gray-50 text-sm" />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-gray-600 mb-1">Pesan Penutup</label>
-                    <input type="text" value={receiptConfig.footerMessage} onChange={(e) => handleReceiptChange('footerMessage', e.target.value)} className="w-full p-2 border rounded-md focus:ring-1 focus:ring-[#8b5a2b] bg-gray-50 text-sm" />
+                </div>
+
+                {/* PRATINJAU STRUK — berubah langsung saat mengedit */}
+                <div className="bg-white rounded-xl shadow-sm border p-5">
+                  <h3 className="font-bold text-lg mb-1 text-center">🖨️ Pratinjau Struk</h3>
+                  <p className="text-[11px] text-gray-400 text-center mb-4">Berubah otomatis saat mengedit • ukuran cetak asli 58mm</p>
+                  <div className="rounded-lg bg-gray-100 p-4 flex justify-center">
+                    <div className="bg-white shadow-[0_2px_10px_rgba(0,0,0,0.15)] font-mono text-[11px] leading-tight text-black w-full max-w-[280px] px-4 py-3">
+                      <div className="text-center mb-2">
+                        <div className="font-bold text-[14px] tracking-widest leading-none mb-1">KOPI LORONG</div>
+                        <div className="text-[10px]">{receiptConfig.address || '—'}</div>
+                        <div className="text-[10px]">{new Date().toLocaleString('id-ID')}</div>
+                      </div>
+                      <div className="border-b border-dashed border-gray-500 mb-2 pb-1"></div>
+                      {(() => {
+                        const sample = menuItems.length >= 2
+                          ? [{ ...menuItems[0], price: menuItems[0].price || 7000, qty: 1 }, { ...menuItems[1], price: menuItems[1].price || 8000, qty: 2 }]
+                          : [{ name: 'Tubruk Hitam', price: 7000, qty: 1 }, { name: 'Tubruk Susu', price: 8000, qty: 2 }];
+                        const total = sample.reduce((s, i) => s + i.price * i.qty, 0);
+                        const tunai = Math.max(50000, total);
+                        return (
+                          <>
+                            {sample.map((item, idx) => (
+                              <div key={idx} className="mb-1">
+                                <div className="w-full truncate">{item.name}</div>
+                                <div className="flex justify-between">
+                                  <span>{item.qty} x {item.price.toLocaleString('id-ID')}</span>
+                                  <span>{(item.price * item.qty).toLocaleString('id-ID')}</span>
+                                </div>
+                              </div>
+                            ))}
+                            <div className="border-t border-dashed border-gray-500 pt-1 mb-2 mt-2"></div>
+                            <div className="font-bold flex justify-between mb-1">
+                              <span>TOTAL</span><span>Rp {total.toLocaleString('id-ID')}</span>
+                            </div>
+                            <div className="flex justify-between mb-1"><span>Tipe Bayar</span><span>CASH</span></div>
+                            <div className="flex justify-between mb-1"><span>Tunai</span><span>Rp {tunai.toLocaleString('id-ID')}</span></div>
+                            <div className="flex justify-between font-bold mb-1"><span>Kembali</span><span>Rp {(tunai - total).toLocaleString('id-ID')}</span></div>
+                          </>
+                        );
+                      })()}
+                      <div className="border-t border-dashed border-gray-500 pt-1 mt-2"></div>
+                      <div className="text-center mt-2 text-[10px]">
+                        <p className="font-bold mb-2">{receiptConfig.footerMessage || '—'}</p>
+                        {receiptConfig.wifiSsid && (
+                          <div className="mb-1">
+                            <p>WIFI: {receiptConfig.wifiSsid}</p>
+                            <p>Pass: {receiptConfig.wifiPass}</p>
+                          </div>
+                        )}
+                        {receiptConfig.socialMedia && <p className="mt-1">{receiptConfig.socialMedia}</p>}
+                        <p className="mt-2 text-gray-400">.</p>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -853,7 +918,7 @@ export default function App() {
       ======================================= */}
       {showCheckout && (
         <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4 print-hidden">
-          <div className="bg-white w-full sm:max-w-md sm:rounded-2xl rounded-t-2xl shadow-xl overflow-hidden flex flex-col max-h-[90vh]">
+          <div className="bg-white w-full sm:max-w-md sm:rounded-2xl rounded-t-2xl shadow-xl overflow-hidden flex flex-col max-h-[90vh] pb-[env(safe-area-inset-bottom)]">
             
             {/* Header Modal */}
             <div className="bg-gray-50 p-4 border-b flex justify-between items-center">
@@ -883,6 +948,8 @@ export default function App() {
                   <div className="text-center font-bold text-gray-500 mb-2">Uang Diterima:</div>
                   <input 
                     type="text" 
+                    inputMode="numeric"
+                    autoComplete="off"
                     value={cashAmount} 
                     onChange={(e) => setCashAmount(e.target.value)}
                     className="w-full text-center text-3xl font-black p-4 border-2 border-gray-300 rounded-xl focus:border-green-500 focus:outline-none bg-gray-50"
