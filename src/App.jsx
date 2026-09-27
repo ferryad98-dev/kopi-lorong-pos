@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 
 // Data Menu Bawaan (Hanya dipakai jika memori HP masih kosong)
 const INITIAL_MENU = [
@@ -43,6 +43,19 @@ function loadJSON(key, fallback) {
   }
 }
 
+// Util tanggal lokal (key format 'YYYY-MM-DD') untuk laporan harian
+function dateKeyOf(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Key tanggal sebuah transaksi (prioritas: 'ts' epoch hasil sync, lalu 'timestamp' ISO transaksi lokal)
+function txDateKey(tx) {
+  const raw = tx.ts || tx.timestamp;
+  if (!raw) return '';
+  const d = new Date(raw);
+  return isNaN(d.getTime()) ? '' : dateKeyOf(d);
+}
+
 export default function App() {
   // === STATE DATABASE (MEMORI HP / LOCAL STORAGE) ===
   const [menuItems, setMenuItems] = useState(() => loadJSON('kl_menu', INITIAL_MENU));
@@ -77,10 +90,20 @@ export default function App() {
   const [itemToDelete, setItemToDelete] = useState(null);
   const [confirmReset, setConfirmReset] = useState(false);
 
+  // Filter laporan harian: default hari ini, bisa pilih tanggal lain atau lihat semua
+  const [reportDate, setReportDate] = useState(() => dateKeyOf(new Date()));
+  const [showAllReports, setShowAllReports] = useState(false);
+
   // === DERIVED DATA ===
   const categories = ['Semua', ...new Set(menuItems.map(item => item.category))];
   const filteredMenu = activeCategory === 'Semua' ? menuItems : menuItems.filter(m => m.category === activeCategory);
   const cartTotal = cart.reduce((sum, item) => sum + (item.price * item.qty), 0);
+
+  // Transaksi yang tampil di Laporan Harian (sesuai filter tanggal)
+  const visibleTx = showAllReports ? transactions : transactions.filter(tx => txDateKey(tx) === reportDate);
+  const todayKey = dateKeyOf(new Date());
+  const isToday = !showAllReports && reportDate === todayKey;
+  const reportDateLabel = new Date(reportDate + 'T00:00:00').toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 
   // === FUNGSI KASIR (POS) ===
   const addToCart = (item) => {
@@ -219,6 +242,14 @@ export default function App() {
       setSyncStatus('Gagal ✕ (cek deployment Apps Script)');
     }
     setTimeout(() => setSyncStatus(''), 3000);
+  };
+
+  // Geser tanggal laporan (untuk tombol ◀ / ▶)
+  const shiftReportDate = (days) => {
+    const d = new Date(reportDate + 'T00:00:00');
+    d.setDate(d.getDate() + days);
+    setReportDate(dateKeyOf(d));
+    setShowAllReports(false);
   };
 
   const handleMenuChange = (id, field, value) => {
@@ -479,45 +510,66 @@ export default function App() {
               <div className="max-w-3xl mx-auto space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="bg-white p-4 rounded-xl border shadow-sm flex flex-col justify-center items-center">
-                    <span className="text-sm font-bold text-gray-500 mb-1">TOTAL OMZET</span>
-                    <span className="text-2xl font-black text-green-600">Rp {transactions.reduce((sum, tx) => sum + tx.total, 0).toLocaleString('id-ID')}</span>
-                    <span className="text-xs text-gray-400 mt-1">{transactions.length} Transaksi</span>
+                    <span className="text-sm font-bold text-gray-500 mb-1">TOTAL OMZET {showAllReports ? '— SEMUA TANGGAL' : (isToday ? '— HARI INI' : '')}</span>
+                    <span className="text-2xl font-black text-green-600">Rp {visibleTx.reduce((sum, tx) => sum + tx.total, 0).toLocaleString('id-ID')}</span>
+                    <span className="text-xs text-gray-400 mt-1">{visibleTx.length} Transaksi</span>
                   </div>
                   <div className="bg-white p-4 rounded-xl border shadow-sm flex flex-col justify-center items-center">
-                    <div className="w-full flex justify-between text-sm mb-2"><span className="font-bold text-gray-600">💵 CASH:</span> <span>Rp {transactions.filter(t=>t.method==='CASH').reduce((s,t)=>s+t.total,0).toLocaleString('id-ID')}</span></div>
-                    <div className="w-full flex justify-between text-sm border-t pt-2"><span className="font-bold text-gray-600">📱 QRIS:</span> <span>Rp {transactions.filter(t=>t.method==='QRIS').reduce((s,t)=>s+t.total,0).toLocaleString('id-ID')}</span></div>
+                    <div className="w-full flex justify-between text-sm mb-2"><span className="font-bold text-gray-600">💵 CASH:</span> <span>Rp {visibleTx.filter(t=>t.method==='CASH').reduce((s,t)=>s+t.total,0).toLocaleString('id-ID')}</span></div>
+                    <div className="w-full flex justify-between text-sm border-t pt-2"><span className="font-bold text-gray-600">📱 QRIS:</span> <span>Rp {visibleTx.filter(t=>t.method==='QRIS').reduce((s,t)=>s+t.total,0).toLocaleString('id-ID')}</span></div>
                   </div>
                 </div>
                 
                 <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
                   <div className="p-4 bg-gray-50 flex flex-wrap gap-2 justify-between items-center border-b">
                     <div className="flex items-center gap-3">
-                      <h3 className="font-bold">Riwayat Transaksi Hari Ini</h3>
+                      <h3 className="font-bold">Riwayat Transaksi</h3>
                       <button onClick={handleSyncData} className="flex items-center gap-1 px-3 py-1.5 bg-blue-100 hover:bg-blue-200 text-blue-700 text-xs font-bold rounded-lg transition-colors">
                         <span>🔄 Sinkron dari Web</span>
                       </button>
                       {syncStatus && <span className="text-xs text-blue-600 font-semibold">{syncStatus}</span>}
                     </div>
                     
-                    {/* Custom Konfirmasi Hapus Data Laporan */}
+                    {/* Konfirmasi bersihkan riwayat lokal (data Sheets tetap aman) */}
                     {confirmReset ? (
                       <div className="flex gap-2 bg-red-50 p-1 rounded-lg border">
-                         <span className="text-xs font-bold text-red-600 flex items-center px-2">Hapus?</span>
-                         <button onClick={resetDailyData} className="text-xs bg-red-600 text-white px-3 py-1.5 rounded-lg font-bold">Ya</button>
+                         <span className="text-xs font-bold text-red-600 flex items-center px-2">Kosongkan riwayat di HP ini? (Sheets tetap aman)</span>
+                         <button onClick={resetDailyData} className="text-xs bg-red-600 text-white px-3 py-1.5 rounded-lg font-bold whitespace-nowrap">Ya</button>
                          <button onClick={() => setConfirmReset(false)} className="text-xs bg-gray-400 text-white px-3 py-1.5 rounded-lg font-bold">Batal</button>
                       </div>
                     ) : (
-                      <button onClick={() => setConfirmReset(true)} className="text-xs bg-red-100 hover:bg-red-200 text-red-600 px-3 py-1.5 rounded-lg font-bold transition-colors">Reset / Kosongkan</button>
+                      <button onClick={() => setConfirmReset(true)} title="Hanya menghapus riwayat transaksi di HP ini. Data di Google Sheets tetap aman dan bisa ditarik lagi lewat Sinkron dari Web." className="text-xs bg-red-50 hover:bg-red-100 text-red-500 px-3 py-1.5 rounded-lg font-bold transition-colors whitespace-nowrap">🧹 Kosongkan Riwayat HP</button>
                     )}
                   </div>
+
+                  {/* FILTER TANGGAL LAPORAN */}
+                  <div className="p-3 bg-white border-b flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => shiftReportDate(-1)} disabled={showAllReports} className="w-8 h-8 bg-gray-100 hover:bg-gray-200 disabled:opacity-40 rounded-lg font-bold text-gray-600 transition-colors">◀</button>
+                      <input
+                        type="date"
+                        value={showAllReports ? '' : reportDate}
+                        max={todayKey}
+                        onChange={(e) => { if (e.target.value) { setReportDate(e.target.value); setShowAllReports(false); } }}
+                        className="p-2 border rounded-lg text-sm font-bold bg-white text-gray-700"
+                      />
+                      <button onClick={() => shiftReportDate(1)} disabled={showAllReports || reportDate >= todayKey} className="w-8 h-8 bg-gray-100 hover:bg-gray-200 disabled:opacity-40 rounded-lg font-bold text-gray-600 transition-colors">▶</button>
+                    </div>
+                    <button onClick={() => { setReportDate(todayKey); setShowAllReports(false); }} className={`px-3 py-2 rounded-lg text-xs font-bold transition-colors ${isToday ? 'bg-[#8b5a2b] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>Hari Ini</button>
+                    <button onClick={() => setShowAllReports(!showAllReports)} className={`px-3 py-2 rounded-lg text-xs font-bold transition-colors ${showAllReports ? 'bg-[#8b5a2b] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>Semua Tanggal</button>
+                    <span className="text-xs text-gray-400 ml-auto font-semibold">
+                      {showAllReports ? `Menampilkan semua: ${transactions.length} transaksi` : reportDateLabel}
+                    </span>
+                  </div>
+
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm text-left">
                       <thead className="bg-gray-50 border-b text-gray-500">
                         <tr><th className="p-3">Waktu</th><th className="p-3">Order ID</th><th className="p-3">Metode</th><th className="p-3">Total (Rp)</th></tr>
                       </thead>
                       <tbody>
-                        {transactions.length === 0 ? <tr><td colSpan="4" className="p-4 text-center text-gray-500">Belum ada transaksi</td></tr> : 
-                          transactions.map(tx => (
+                        {visibleTx.length === 0 ? <tr><td colSpan="4" className="p-4 text-center text-gray-500">{showAllReports ? 'Belum ada transaksi' : 'Belum ada transaksi pada tanggal ini — coba lihat "Semua Tanggal"'}</td></tr> : 
+                          visibleTx.map(tx => (
                             <tr key={tx.id} className="border-b hover:bg-gray-50 transition-colors">
                               <td className="p-3 text-xs">{tx.displayDate || tx.timestamp}</td>
                               <td className="p-3 text-xs font-mono">{tx.id}</td>
