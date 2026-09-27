@@ -32,37 +32,28 @@ const INITIAL_MENU = [
 // URL GOOGLE APPS SCRIPT (SUDAH DIPERBARUI)
 const URL_SHEET = 'https://script.google.com/macros/s/AKfycbzqe6pUMq-vIL0O8FD4BMbCBgMAPMKprEf3vQs6pOq8V18Or1ZPRFwKcUMdtRnG4qJk/exec';
 
+// Pembaca localStorage yang aman (app tidak crash walau data tersimpan rusak/korup)
+function loadJSON(key, fallback) {
+  try {
+    const saved = localStorage.getItem(key);
+    return saved ? JSON.parse(saved) : fallback;
+  } catch (e) {
+    console.warn('Data lokal rusak, dipakai bawaan:', key, e);
+    return fallback;
+  }
+}
+
 export default function App() {
   // === STATE DATABASE (MEMORI HP / LOCAL STORAGE) ===
-  const [menuItems, setMenuItems] = useState(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('kl_menu');
-      if (saved) return JSON.parse(saved);
-    }
-    return INITIAL_MENU;
-  });
-
-  const [transactions, setTransactions] = useState(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('kl_tx');
-      if (saved) return JSON.parse(saved);
-    }
-    return [];
-  });
-
-  const [receiptConfig, setReceiptConfig] = useState(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('kl_receipt');
-      if (saved) return JSON.parse(saved);
-    }
-    return {
-      address: 'Jalan Pengayoman 117',
-      wifiSsid: 'KOPI LORONG',
-      wifiPass: 'kopimanis',
-      socialMedia: 'IG: @kopilorongmalang',
-      footerMessage: '* Terima Kasih *'
-    };
-  });
+  const [menuItems, setMenuItems] = useState(() => loadJSON('kl_menu', INITIAL_MENU));
+  const [transactions, setTransactions] = useState(() => loadJSON('kl_tx', []));
+  const [receiptConfig, setReceiptConfig] = useState(() => loadJSON('kl_receipt', {
+    address: 'Jalan Pengayoman 117',
+    wifiSsid: 'KOPI LORONG',
+    wifiPass: 'kopimanis',
+    socialMedia: 'IG: @kopilorongmalang',
+    footerMessage: '* Terima Kasih *'
+  }));
 
   // AUTO-SAVE SETIAP ADA PERUBAHAN
   useEffect(() => { localStorage.setItem('kl_menu', JSON.stringify(menuItems)); }, [menuItems]);
@@ -166,14 +157,18 @@ export default function App() {
     // 2. Simpan Transaksi ke Memori HP
     setTransactions([newTx, ...transactions]);
 
-    // 3. Kirim ke Google Sheets (TIDAK AKAN ERROR KARENA URL SUDAH VALID)
+    // 3. Kirim ke Google Sheets
+    // CATATAN: mode 'no-cors' = request tetap terkirim, tapi respons tidak bisa dibaca.
+    // Content-Type sengaja text/plain karena pada mode no-cors browser menolak
+    // header application/json (header-nya dibuang diam-diam oleh browser).
     try {
       await fetch(URL_SHEET, {
         method: 'POST',
         mode: 'no-cors', // Penting agar tidak terblokir Google CORS
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({
           timestamp: txDate.toLocaleString('id-ID'),
+          iso: txDate.toISOString(), // waktu presisi untuk sorting & backup
           orderId: txId,
           total: cartTotal,
           paymentMethod: method,
@@ -193,20 +188,35 @@ export default function App() {
     }, 300);
   };
 
+  // Tarik transaksi dari Google Sheets, lalu GABUNGKAN dengan transaksi lokal
+  // (yang belum sempat terunggah tidak hilang, tidak ada yang dobel)
   const handleSyncData = async () => {
     setSyncStatus('Menarik data...');
     try {
       const res = await fetch(URL_SHEET);
       const data = await res.json();
-      if (data && data.transactions) {
-        setTransactions(data.transactions);
-        setSyncStatus('Berhasil ✓');
+      if (data && data.status === 'ok' && Array.isArray(data.transactions)) {
+        const localIds = new Set(transactions.map(t => t.id));
+        const fromServer = data.transactions
+          .filter(t => t.id && !localIds.has(t.id))
+          .map(t => ({ ...t, total: Number(t.total) || 0 }));
+
+        const merged = [...transactions, ...fromServer].sort((a, b) => {
+          const ta = a.ts || Date.parse(a.timestamp) || 0;
+          const tb = b.ts || Date.parse(b.timestamp) || 0;
+          return tb - ta; // terbaru di atas
+        });
+
+        setTransactions(merged);
+        setSyncStatus(fromServer.length > 0
+          ? `Berhasil ✓ (+${fromServer.length} dari web)`
+          : 'Berhasil ✓ (sudah sinkron)');
       } else {
-        setSyncStatus('Selesai (Kosong)');
+        setSyncStatus('Gagal ✕ (respon server tidak dikenal)');
       }
     } catch (e) {
       console.error(e);
-      setSyncStatus('Gagal ✕');
+      setSyncStatus('Gagal ✕ (cek deployment Apps Script)');
     }
     setTimeout(() => setSyncStatus(''), 3000);
   };
@@ -244,16 +254,23 @@ export default function App() {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50 text-gray-800 font-sans">
+    <div className="app-root flex flex-col h-screen bg-gray-50 text-gray-800 font-sans">
       
       {/* =======================================
           STYLING UNTUK PRINTER THERMAL 58MM
+          (FIX: .print-block sekarang benar-benar
+           muncul saat print — sebelumnya class ini
+           tidak pernah didefinisikan, sehingga
+           struk tercetak BLANK karena Tailwind
+           class "hidden" tidak pernah di-override)
       ======================================= */}
       <style>{`
         @media print {
           @page { margin: 0; size: 58mm auto; }
-          body { width: 58mm; margin: 0; padding: 2mm; background-color: white; color: black; }
+          html, body { width: 58mm; margin: 0; padding: 2mm; background-color: white; color: black; }
+          .app-root { height: auto !important; min-height: 0 !important; overflow: visible !important; }
           .print-hidden { display: none !important; }
+          .print-block { display: block !important; }
         }
       `}</style>
 
@@ -623,7 +640,7 @@ export default function App() {
           TEMPLATE PRINT THERMAL 58MM
           (Hanya muncul di kertas saat print)
       ======================================= */}
-      <div className="hidden print-block font-mono text-[12px] leading-tight text-black w-[58mm]">
+      <div className="hidden print-block font-mono text-[12px] leading-tight text-black w-full">
         {/* Header Struk */}
         <div className="text-center mb-3">
           <h2 className="font-bold text-[16px] tracking-widest leading-none mb-1">KOPI LORONG</h2>
