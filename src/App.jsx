@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import logo from './assets/logo.png';
 
 // Data Menu Bawaan (Hanya dipakai jika memori HP masih kosong)
@@ -57,6 +57,22 @@ function txDateKey(tx) {
   return isNaN(d.getTime()) ? '' : dateKeyOf(d);
 }
 
+// Rapikan data menu yang datang dari server (tipe konsisten dengan data lokal)
+function normalizeMenu(m) {
+  return {
+    id: String(m.id || ''),
+    name: String(m.name || ''),
+    category: String(m.category || 'Lainnya'),
+    price: Number(m.price) || 0,
+    stock: (m.stock === '' || m.stock == null) ? '' : String(m.stock)
+  };
+}
+
+// Generator ID transaksi (di luar komponen supaya tidak dianggap efek samping render)
+function generateTxId() {
+  return `KL-${Math.floor(100000 + Math.random() * 900000)}`;
+}
+
 export default function App() {
   // === STATE DATABASE (MEMORI HP / LOCAL STORAGE) ===
   const [menuItems, setMenuItems] = useState(() => loadJSON('kl_menu', INITIAL_MENU));
@@ -69,10 +85,169 @@ export default function App() {
     footerMessage: '* Terima Kasih *'
   }));
 
-  // AUTO-SAVE SETIAP ADA PERUBAHAN
-  useEffect(() => { localStorage.setItem('kl_menu', JSON.stringify(menuItems)); }, [menuItems]);
+  // === SINKRONISASI CLOUD (multi-device via Google Sheets) ===
+  const [cloudStatus, setCloudStatus] = useState('idle'); // 'idle' | 'saving' | 'ok' | 'err'
+  const [lastSyncAt, setLastSyncAt] = useState(null);
+
+  // Ref: salinan state terbaru (aman dipakai di interval/polling tanpa closure basi)
+  const menuItemsRef = useRef(menuItems);
+  const receiptRef = useRef(receiptConfig);
+  const transactionsRef = useRef(transactions);
+
+  // Ref: penanda "ada perubahan lokal yang belum terkirim ke cloud"
+  const menuDirtyRef = useRef(localStorage.getItem('kl_menu_dirty') === '1');
+  const receiptDirtyRef = useRef(localStorage.getItem('kl_receipt_dirty') === '1');
+
+  // Ref: cegah push balik saat perubahan berasal dari pull server (echo)
+  const skipNextMenuPush = useRef(false);
+  const skipNextReceiptPush = useRef(false);
+  const firstMenuEffect = useRef(true);
+  const firstReceiptEffect = useRef(true);
+
+  // Kirim data ke Google Apps Script (no-cors: terkirim, respons tak terbaca — cukup untuk simpan data)
+  const pushCloud = async (action, payload = {}) => {
+    setCloudStatus('saving');
+    try {
+      await fetch(URL_SHEET, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action, ...payload })
+      });
+      setCloudStatus('ok');
+      setLastSyncAt(Date.now());
+      return true;
+    } catch (e) {
+      console.error('Gagal kirim ke cloud:', e);
+      setCloudStatus('err');
+      return false;
+    }
+  };
+
+  // Tarik SEMUA data dari cloud, lalu terapkan dengan aman:
+  //  - menu/struk: hanya kalau tidak ada edit lokal yang belum terkirim
+  //  - transaksi: digabung (tidak dobel, tidak hilang)
+  const pullCloud = async () => {
+    const res = await fetch(URL_SHEET + '?action=bootstrap');
+    const data = await res.json();
+    if (!data || data.status !== 'ok') throw new Error('Respon server tidak dikenal');
+
+    // --- MENU (termasuk stok) ---
+    if (Array.isArray(data.menu) && data.menu.length > 0) {
+      if (!menuDirtyRef.current) {
+        const serverMenu = data.menu.map(normalizeMenu);
+        if (JSON.stringify(serverMenu) !== JSON.stringify(menuItemsRef.current)) {
+          skipNextMenuPush.current = true;
+          menuItemsRef.current = serverMenu;
+          setMenuItems(serverMenu);
+        }
+      } // kalau dirty: edit lokal lebih baru → tetap lokal, akan ter-push otomatis
+    } else if (data.menu === null) {
+      // Cloud belum pernah diisi → inisialisasi dengan data perangkat ini
+      if (menuItemsRef.current.length > 0) await pushCloud('saveMenu', { menu: menuItemsRef.current });
+    }
+
+    // --- SETINGAN STRUK ---
+    if (data.receipt) {
+      if (!receiptDirtyRef.current) {
+        const serverReceipt = {
+          address: String(data.receipt.address || ''),
+          wifiSsid: String(data.receipt.wifiSsid || ''),
+          wifiPass: String(data.receipt.wifiPass || ''),
+          socialMedia: String(data.receipt.socialMedia || ''),
+          footerMessage: String(data.receipt.footerMessage || '')
+        };
+        if (JSON.stringify(serverReceipt) !== JSON.stringify(receiptRef.current)) {
+          skipNextReceiptPush.current = true;
+          receiptRef.current = serverReceipt;
+          setReceiptConfig(serverReceipt);
+        }
+      }
+    } else {
+      await pushCloud('saveReceipt', { receipt: receiptRef.current });
+    }
+
+    // --- TRANSAKSI (gabungkan, tanpa dobel) ---
+    const serverTx = Array.isArray(data.transactions) ? data.transactions : [];
+    const localIds = new Set(transactionsRef.current.map(t => t.id));
+    const newOnes = serverTx
+      .filter(t => t && t.id && !localIds.has(t.id))
+      .map(t => ({ ...t, total: Number(t.total) || 0 }));
+    if (newOnes.length > 0) {
+      const merged = [...transactionsRef.current, ...newOnes].sort((a, b) => (b.ts || 0) - (a.ts || 0));
+      transactionsRef.current = merged;
+      setTransactions(merged);
+    }
+
+    // Coba kirim ulang perubahan lokal yang sempat gagal (misal tadi offline)
+    if (menuDirtyRef.current) {
+      const ok = await pushCloud('saveMenu', { menu: menuItemsRef.current });
+      if (ok) { menuDirtyRef.current = false; localStorage.removeItem('kl_menu_dirty'); }
+    }
+    if (receiptDirtyRef.current) {
+      const ok = await pushCloud('saveReceipt', { receipt: receiptRef.current });
+      if (ok) { receiptDirtyRef.current = false; localStorage.removeItem('kl_receipt_dirty'); }
+    }
+
+    setCloudStatus('ok');
+    setLastSyncAt(Date.now());
+    return { txCount: serverTx.length, newCount: newOnes.length };
+  };
+
+  // AUTO-SAVE LOKAL + KIRIM CLOUD: menu & stok (ditunda 2,5 dtk biar tidak spam saat mengetik)
+  useEffect(() => {
+    localStorage.setItem('kl_menu', JSON.stringify(menuItems));
+    if (skipNextMenuPush.current) { skipNextMenuPush.current = false; return; }
+    if (firstMenuEffect.current) { firstMenuEffect.current = false; return; } // jangan push data lama saat app baru dibuka
+    menuDirtyRef.current = true;
+    localStorage.setItem('kl_menu_dirty', '1');
+    const t = setTimeout(() => {
+      pushCloud('saveMenu', { menu: menuItems }).then(ok => {
+        if (ok) { menuDirtyRef.current = false; localStorage.removeItem('kl_menu_dirty'); }
+      });
+    }, 2500);
+    return () => clearTimeout(t);
+  }, [menuItems]);
+
   useEffect(() => { localStorage.setItem('kl_tx', JSON.stringify(transactions)); }, [transactions]);
-  useEffect(() => { localStorage.setItem('kl_receipt', JSON.stringify(receiptConfig)); }, [receiptConfig]);
+
+  // AUTO-SAVE LOKAL + KIRIM CLOUD: setingan struk
+  useEffect(() => {
+    localStorage.setItem('kl_receipt', JSON.stringify(receiptConfig));
+    if (skipNextReceiptPush.current) { skipNextReceiptPush.current = false; return; }
+    if (firstReceiptEffect.current) { firstReceiptEffect.current = false; return; }
+    receiptDirtyRef.current = true;
+    localStorage.setItem('kl_receipt_dirty', '1');
+    const t = setTimeout(() => {
+      pushCloud('saveReceipt', { receipt: receiptConfig }).then(ok => {
+        if (ok) { receiptDirtyRef.current = false; localStorage.removeItem('kl_receipt_dirty'); }
+      });
+    }, 2500);
+    return () => clearTimeout(t);
+  }, [receiptConfig]);
+
+  // Ref selalu mengikuti state terbaru
+  useEffect(() => { menuItemsRef.current = menuItems; }, [menuItems]);
+  useEffect(() => { receiptRef.current = receiptConfig; }, [receiptConfig]);
+  useEffect(() => { transactionsRef.current = transactions; }, [transactions]);
+
+  // SINKRON AWAL + POLLING TIAP 30 DETIK + TARIK SAAT TAB DIBUKA LAGI
+  // (ini yang bikin pindah device terasa realtime: device lain menjual → stok & laporan di sini ikut berubah)
+  useEffect(() => {
+    pullCloud().catch(e => { console.error('Sinkron awal gagal:', e); setCloudStatus('err'); });
+    const iv = setInterval(() => {
+      pullCloud().catch(e => { console.error('Polling gagal:', e); setCloudStatus('err'); });
+    }, 30000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        pullCloud().catch(() => setCloudStatus('err'));
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVisible); };
+    // sengaja deps kosong: cukup sekali di mount — pullCloud bekerja lewat ref, tidak basi
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // === STATE UI & KASIR ===
   const [viewMode, setViewMode] = useState('pos'); // 'pos' atau 'dashboard'
@@ -154,7 +329,7 @@ export default function App() {
   };
 
   const finalizeTransaction = async (method, cash, change) => {
-    const txId = `KL-${Math.floor(100000 + Math.random() * 900000)}`;
+    const txId = generateTxId();
     const txDate = new Date();
 
     const newTx = {
@@ -181,25 +356,15 @@ export default function App() {
     // 2. Simpan Transaksi ke Memori HP
     setTransactions([newTx, ...transactions]);
 
-    // 3. Kirim ke Google Sheets
-    // CATATAN: mode 'no-cors' = request tetap terkirim, tapi respons tidak bisa dibaca.
-    // Content-Type sengaja text/plain karena pada mode no-cors browser menolak
-    // header application/json (header-nya dibuang diam-diam oleh browser).
-    try {
-      await fetch(URL_SHEET, {
-        method: 'POST',
-        mode: 'no-cors', // Penting agar tidak terblokir Google CORS
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({
-          timestamp: txDate.toLocaleString('id-ID'),
-          iso: txDate.toISOString(), // waktu presisi untuk sorting & backup
-          orderId: txId,
-          total: cartTotal,
-          paymentMethod: method,
-          itemsString: cart.map(i => `${i.qty}x ${i.name}`).join(", ")
-        })
-      });
-    } catch(e) { console.error("Koneksi gagal ke Spreadsheet", e); }
+    // 3. Kirim ke Google Sheets (fire-and-forget: cetak struk tidak menunggu koneksi)
+    pushCloud('tx', {
+      timestamp: txDate.toLocaleString('id-ID'),
+      iso: txDate.toISOString(), // waktu presisi untuk sorting & backup
+      orderId: txId,
+      total: cartTotal,
+      paymentMethod: method,
+      itemsString: cart.map(i => `${i.qty}x ${i.name}`).join(", ")
+    });
 
     // 4. Print Thermal & Reset
     setTimeout(() => {
@@ -212,37 +377,19 @@ export default function App() {
     }, 300);
   };
 
-  // Tarik transaksi dari Google Sheets, lalu GABUNGKAN dengan transaksi lokal
-  // (yang belum sempat terunggah tidak hilang, tidak ada yang dobel)
+  // Tarik SEMUA data (menu + stok + struk + transaksi) dari Google Sheets
   const handleSyncData = async () => {
     setSyncStatus('Menarik data...');
     try {
-      const res = await fetch(URL_SHEET);
-      const data = await res.json();
-      if (data && data.status === 'ok' && Array.isArray(data.transactions)) {
-        const localIds = new Set(transactions.map(t => t.id));
-        const fromServer = data.transactions
-          .filter(t => t.id && !localIds.has(t.id))
-          .map(t => ({ ...t, total: Number(t.total) || 0 }));
-
-        const merged = [...transactions, ...fromServer].sort((a, b) => {
-          const ta = a.ts || Date.parse(a.timestamp) || 0;
-          const tb = b.ts || Date.parse(b.timestamp) || 0;
-          return tb - ta; // terbaru di atas
-        });
-
-        setTransactions(merged);
-        setSyncStatus(fromServer.length > 0
-          ? `Berhasil ✓ (+${fromServer.length} dari web)`
-          : 'Berhasil ✓ (sudah sinkron)');
-      } else {
-        setSyncStatus('Gagal ✕ (respon server tidak dikenal)');
-      }
+      const r = await pullCloud();
+      setSyncStatus(r.newCount > 0
+        ? `Berhasil ✓ (+${r.newCount} transaksi dari web)`
+        : 'Berhasil ✓ (sudah sinkron)');
     } catch (e) {
       console.error(e);
-      setSyncStatus('Gagal ✕ (cek deployment Apps Script)');
+      setSyncStatus('Gagal ✕ (cek koneksi / deployment Apps Script)');
     }
-    setTimeout(() => setSyncStatus(''), 3000);
+    setTimeout(() => setSyncStatus(''), 3500);
   };
 
   // Geser tanggal laporan (untuk tombol ◀ / ▶)
@@ -312,12 +459,27 @@ export default function App() {
           <img src={logo} alt="Logo Kopi Lorong" className="w-10 h-10 rounded-full object-cover ring-2 ring-[#8b5a2b]/70 shadow-md bg-[#252120]" />
           <h1 className="text-xl font-bold tracking-wider">KOPI LORONG</h1>
         </div>
-        <button 
-          onClick={() => setViewMode(viewMode === 'pos' ? 'dashboard' : 'pos')}
-          className="bg-white/20 px-4 py-2 rounded-lg text-sm font-bold border border-white/30 hover:bg-white/30 transition-colors"
-        >
-          {viewMode === 'pos' ? '⚙️ Dashboard' : '← Mode Kasir'}
-        </button>
+        <div className="flex items-center gap-2">
+          <span
+            title={lastSyncAt
+              ? `Data tersimpan di cloud • terakhir sinkron ${new Date(lastSyncAt).toLocaleTimeString('id-ID')}`
+              : 'Sinkronisasi cloud belum berjalan'}
+            className={`text-[10px] font-bold px-2 py-1 rounded-full border whitespace-nowrap transition-colors ${
+              cloudStatus === 'ok' ? 'bg-green-500/20 text-green-300 border-green-400/40' :
+              cloudStatus === 'saving' ? 'bg-yellow-500/20 text-yellow-200 border-yellow-400/40 animate-pulse' :
+              cloudStatus === 'err' ? 'bg-red-500/20 text-red-300 border-red-400/40' :
+              'bg-white/10 text-white/60 border-white/20'
+            }`}
+          >
+            {cloudStatus === 'saving' ? '☁️…' : cloudStatus === 'ok' ? '☁️✓' : cloudStatus === 'err' ? '☁️✕' : '☁️'}
+          </span>
+          <button 
+            onClick={() => setViewMode(viewMode === 'pos' ? 'dashboard' : 'pos')}
+            className="bg-white/20 px-4 py-2 rounded-lg text-sm font-bold border border-white/30 hover:bg-white/30 transition-colors"
+          >
+            {viewMode === 'pos' ? '⚙️ Dashboard' : '← Mode Kasir'}
+          </button>
+        </div>
       </header>
 
       {/* =======================================
