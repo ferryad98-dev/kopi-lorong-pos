@@ -161,8 +161,8 @@ export default function App() {
     // 3. Kirim ke Google Sheets
     try {
       // GANTI URL DI BAWAH INI DENGAN URL APPS SCRIPT ANDA JIKA SUDAH ADA
-      const urlSheet = 'URL_APPS_SCRIPT_ANDA'; 
-      if(urlSheet !== 'URL_APPS_SCRIPT_ANDA') {
+      const urlSheet = 'https://script.google.com/macros/library/d/1KDolzvqKLWM5jdZYF4WGSpgYXpMg4D3qA0LBsFNQCCkyRZMZP0i2TIRe/1'; 
+      if(urlSheet !== 'https://script.google.com/macros/library/d/1KDolzvqKLWM5jdZYF4WGSpgYXpMg4D3qA0LBsFNQCCkyRZMZP0i2TIRe/1') {
         const itemsString = cart.map(i => `${i.qty}x ${i.name}`).join(", ");
         await fetch(urlSheet, {
           method: 'POST',
