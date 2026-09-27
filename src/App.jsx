@@ -29,6 +29,9 @@ const INITIAL_MENU = [
   { id: 'm6', name: '+ Bakso', category: 'Makanan', price: 3000, stock: '' },
 ];
 
+// URL GOOGLE APPS SCRIPT (SUDAH DIPERBARUI)
+const URL_SHEET = 'https://script.google.com/macros/s/AKfycbzqe6pUMq-vIL0O8FD4BMbCBgMAPMKprEf3vQs6pOq8V18Or1ZPRFwKcUMdtRnG4qJk/exec';
+
 export default function App() {
   // === STATE DATABASE (MEMORI HP / LOCAL STORAGE) ===
   const [menuItems, setMenuItems] = useState(() => {
@@ -77,6 +80,11 @@ export default function App() {
   const [checkoutStep, setCheckoutStep] = useState('select'); // 'select' atau 'cash'
   const [paymentMethod, setPaymentMethod] = useState('');
   const [cashAmount, setCashAmount] = useState('');
+  
+  // Custom states untuk notifikasi dan konfirmasi hapus
+  const [syncStatus, setSyncStatus] = useState('');
+  const [itemToDelete, setItemToDelete] = useState(null);
+  const [confirmReset, setConfirmReset] = useState(false);
 
   // === DERIVED DATA ===
   const categories = ['Semua', ...new Set(menuItems.map(item => item.category))];
@@ -158,26 +166,21 @@ export default function App() {
     // 2. Simpan Transaksi ke Memori HP
     setTransactions([newTx, ...transactions]);
 
-    // 3. Kirim ke Google Sheets
+    // 3. Kirim ke Google Sheets (TIDAK AKAN ERROR KARENA URL SUDAH VALID)
     try {
-      // GANTI URL DI BAWAH INI DENGAN URL APPS SCRIPT ANDA JIKA SUDAH ADA
-      const urlSheet = 'https://script.google.com/macros/s/AKfycbzqe6pUMq-vIL0O8FD4BMbCBgMAPMKprEf3vQs6pOq8V18Or1ZPRFwKcUMdtRnG4qJk/exec'; 
-      if(urlSheet !== 'https://script.google.com/macros/s/AKfycbzqe6pUMq-vIL0O8FD4BMbCBgMAPMKprEf3vQs6pOq8V18Or1ZPRFwKcUMdtRnG4qJk/exec') {
-        const itemsString = cart.map(i => `${i.qty}x ${i.name}`).join(", ");
-        await fetch(urlSheet, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            timestamp: txDate.toLocaleString('id-ID'),
-            orderId: txId,
-            total: cartTotal,
-            paymentMethod: method,
-            items: cart
-          })
-        });
-      }
-    } catch(e) { console.error("Gagal kirim ke Google Sheets"); }
+      await fetch(URL_SHEET, {
+        method: 'POST',
+        mode: 'no-cors', // Penting agar tidak terblokir Google CORS
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          timestamp: txDate.toLocaleString('id-ID'),
+          orderId: txId,
+          total: cartTotal,
+          paymentMethod: method,
+          itemsString: cart.map(i => `${i.qty}x ${i.name}`).join(", ")
+        })
+      });
+    } catch(e) { console.error("Koneksi gagal ke Spreadsheet", e); }
 
     // 4. Print Thermal & Reset
     setTimeout(() => {
@@ -190,7 +193,24 @@ export default function App() {
     }, 300);
   };
 
-  // === FUNGSI DASHBOARD ===
+  const handleSyncData = async () => {
+    setSyncStatus('Menarik data...');
+    try {
+      const res = await fetch(URL_SHEET);
+      const data = await res.json();
+      if (data && data.transactions) {
+        setTransactions(data.transactions);
+        setSyncStatus('Berhasil ✓');
+      } else {
+        setSyncStatus('Selesai (Kosong)');
+      }
+    } catch (e) {
+      console.error(e);
+      setSyncStatus('Gagal ✕');
+    }
+    setTimeout(() => setSyncStatus(''), 3000);
+  };
+
   const handleMenuChange = (id, field, value) => {
     setMenuItems(menuItems.map(m => m.id === id ? { ...m, [field]: value } : m));
   };
@@ -210,9 +230,8 @@ export default function App() {
   };
 
   const deleteMenu = (id) => {
-    if(confirm('Yakin hapus menu ini?')) {
-      setMenuItems(menuItems.filter(m => m.id !== id));
-    }
+    setMenuItems(menuItems.filter(m => m.id !== id));
+    setItemToDelete(null);
   };
 
   const handleReceiptChange = (field, value) => {
@@ -220,9 +239,8 @@ export default function App() {
   };
 
   const resetDailyData = () => {
-    if(confirm('Yakin ingin mereset Laporan Harian? Pastikan data sudah masuk ke Excel.')) {
-      setTransactions([]);
-    }
+    setTransactions([]);
+    setConfirmReset(false);
   };
 
   return (
@@ -230,7 +248,6 @@ export default function App() {
       
       {/* =======================================
           STYLING UNTUK PRINTER THERMAL 58MM
-          (Menggunakan style inline agar tidak error)
       ======================================= */}
       <style>{`
         @media print {
@@ -248,7 +265,7 @@ export default function App() {
         </div>
         <button 
           onClick={() => setViewMode(viewMode === 'pos' ? 'dashboard' : 'pos')}
-          className="bg-white/20 px-4 py-2 rounded-lg text-sm font-bold border border-white/30"
+          className="bg-white/20 px-4 py-2 rounded-lg text-sm font-bold border border-white/30 hover:bg-white/30 transition-colors"
         >
           {viewMode === 'pos' ? '⚙️ Dashboard' : '← Mode Kasir'}
         </button>
@@ -260,13 +277,13 @@ export default function App() {
       {viewMode === 'pos' && (
         <>
           {/* TAB KATEGORI */}
-          <div className="bg-white border-b overflow-x-auto print-hidden">
+          <div className="bg-white border-b overflow-x-auto print-hidden scrollbar-hide">
             <div className="flex p-2 gap-2 w-max">
               {categories.map(cat => (
                 <button 
                   key={cat} 
                   onClick={() => setActiveCategory(cat)}
-                  className={`px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${activeCategory === cat ? 'bg-[#8b5a2b] text-white' : 'bg-gray-100 text-gray-600'}`}
+                  className={`px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${activeCategory === cat ? 'bg-[#8b5a2b] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
                 >
                   {cat}
                 </button>
@@ -284,7 +301,7 @@ export default function App() {
                     key={item.id} 
                     onClick={() => addToCart(item)}
                     disabled={isOutOfStock}
-                    className={`relative p-3 rounded-xl shadow-sm border flex flex-col items-start text-left transition-all ${isOutOfStock ? 'bg-gray-100 border-gray-200 opacity-60' : 'bg-white border-gray-200 active:bg-[#f3e5d8] active:scale-95'}`}
+                    className={`relative p-3 rounded-xl shadow-sm border flex flex-col items-start text-left transition-all ${isOutOfStock ? 'bg-gray-100 border-gray-200 opacity-60' : 'bg-white border-gray-200 hover:border-[#8b5a2b] active:bg-[#f3e5d8] active:scale-95'}`}
                   >
                     <span className="text-[10px] font-bold text-[#8b5a2b] mb-1 uppercase tracking-wide bg-orange-50 px-2 py-0.5 rounded">{item.category}</span>
                     <span className="text-sm font-bold mb-2 leading-tight">{item.name}</span>
@@ -329,7 +346,7 @@ export default function App() {
               </div>
               <button 
                 onClick={() => setShowCheckout(true)}
-                className="w-full bg-[#2b1b17] text-white py-3.5 rounded-xl font-bold text-lg active:scale-[0.98] transition-transform shadow-lg"
+                className="w-full bg-[#2b1b17] hover:bg-[#1a100d] text-white py-3.5 rounded-xl font-bold text-lg active:scale-[0.98] transition-transform shadow-lg"
               >
                 LANJUT PEMBAYARAN
               </button>
@@ -354,7 +371,7 @@ export default function App() {
               <button 
                 key={tab.id}
                 onClick={() => setDashboardTab(tab.id)}
-                className={`px-4 py-3 text-sm font-bold whitespace-nowrap border-b-2 transition-colors ${dashboardTab === tab.id ? 'border-[#8b5a2b] text-[#8b5a2b]' : 'border-transparent text-gray-500'}`}
+                className={`px-4 py-3 text-sm font-bold whitespace-nowrap border-b-2 transition-colors ${dashboardTab === tab.id ? 'border-[#8b5a2b] text-[#8b5a2b]' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
               >
                 {tab.label}
               </button>
@@ -368,7 +385,7 @@ export default function App() {
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div className="p-4 bg-gray-50 flex justify-between items-center border-b">
                   <h3 className="font-bold">Daftar Harga & Menu</h3>
-                  <button onClick={addMenu} className="bg-green-600 text-white px-3 py-1.5 rounded-lg text-sm font-bold">+ Menu Baru</button>
+                  <button onClick={addMenu} className="bg-green-600 text-white px-3 py-1.5 rounded-lg text-sm font-bold shadow-sm hover:bg-green-700">+ Menu Baru</button>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm text-left">
@@ -387,10 +404,19 @@ export default function App() {
                           <td className="p-2"><input type="text" value={item.category} onChange={(e) => handleMenuChange(item.id, 'category', e.target.value)} className="w-full p-2 border rounded focus:ring-1 focus:ring-[#8b5a2b] bg-white"/></td>
                           <td className="p-2"><input type="number" value={item.price} onChange={(e) => handleMenuChange(item.id, 'price', parseInt(e.target.value)||0)} className="w-24 p-2 border rounded focus:ring-1 focus:ring-[#8b5a2b] bg-white"/></td>
                           <td className="p-2">
-                            <div className="flex justify-center gap-1">
-                              <button onClick={() => moveMenu(index, -1)} className="p-2 bg-gray-200 rounded">↑</button>
-                              <button onClick={() => moveMenu(index, 1)} className="p-2 bg-gray-200 rounded">↓</button>
-                              <button onClick={() => deleteMenu(item.id)} className="p-2 bg-red-100 text-red-600 rounded">✕</button>
+                            <div className="flex justify-center items-center gap-1">
+                              <button onClick={() => moveMenu(index, -1)} className="p-2 bg-gray-200 hover:bg-gray-300 rounded transition-colors">↑</button>
+                              <button onClick={() => moveMenu(index, 1)} className="p-2 bg-gray-200 hover:bg-gray-300 rounded transition-colors">↓</button>
+                              
+                              {/* Custom Delete Confirm Box */}
+                              {itemToDelete === item.id ? (
+                                <div className="flex gap-1 items-center ml-2 border bg-red-50 p-1 rounded">
+                                  <button onClick={() => deleteMenu(item.id)} className="px-2 py-1 bg-red-600 text-white font-bold rounded text-xs">Yakin?</button>
+                                  <button onClick={() => setItemToDelete(null)} className="px-2 py-1 bg-gray-400 text-white font-bold rounded text-xs">Batal</button>
+                                </div>
+                              ) : (
+                                <button onClick={() => setItemToDelete(item.id)} className="p-2 bg-red-100 hover:bg-red-200 text-red-600 rounded transition-colors">✕</button>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -447,9 +473,25 @@ export default function App() {
                 </div>
                 
                 <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
-                  <div className="p-4 bg-gray-50 flex justify-between items-center border-b">
-                    <h3 className="font-bold">Riwayat Transaksi Hari Ini</h3>
-                    <button onClick={resetDailyData} className="text-xs bg-red-100 text-red-600 px-3 py-1.5 rounded-lg font-bold">Reset / Kosongkan</button>
+                  <div className="p-4 bg-gray-50 flex flex-wrap gap-2 justify-between items-center border-b">
+                    <div className="flex items-center gap-3">
+                      <h3 className="font-bold">Riwayat Transaksi Hari Ini</h3>
+                      <button onClick={handleSyncData} className="flex items-center gap-1 px-3 py-1.5 bg-blue-100 hover:bg-blue-200 text-blue-700 text-xs font-bold rounded-lg transition-colors">
+                        <span>🔄 Sinkron dari Web</span>
+                      </button>
+                      {syncStatus && <span className="text-xs text-blue-600 font-semibold">{syncStatus}</span>}
+                    </div>
+                    
+                    {/* Custom Konfirmasi Hapus Data Laporan */}
+                    {confirmReset ? (
+                      <div className="flex gap-2 bg-red-50 p-1 rounded-lg border">
+                         <span className="text-xs font-bold text-red-600 flex items-center px-2">Hapus?</span>
+                         <button onClick={resetDailyData} className="text-xs bg-red-600 text-white px-3 py-1.5 rounded-lg font-bold">Ya</button>
+                         <button onClick={() => setConfirmReset(false)} className="text-xs bg-gray-400 text-white px-3 py-1.5 rounded-lg font-bold">Batal</button>
+                      </div>
+                    ) : (
+                      <button onClick={() => setConfirmReset(true)} className="text-xs bg-red-100 hover:bg-red-200 text-red-600 px-3 py-1.5 rounded-lg font-bold transition-colors">Reset / Kosongkan</button>
+                    )}
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm text-left">
@@ -457,10 +499,10 @@ export default function App() {
                         <tr><th className="p-3">Waktu</th><th className="p-3">Order ID</th><th className="p-3">Metode</th><th className="p-3">Total (Rp)</th></tr>
                       </thead>
                       <tbody>
-                        {transactions.length === 0 ? <tr><td colSpan="4" className="p-4 text-center text-gray-500">Belum ada transaksi hari ini</td></tr> : 
+                        {transactions.length === 0 ? <tr><td colSpan="4" className="p-4 text-center text-gray-500">Belum ada transaksi</td></tr> : 
                           transactions.map(tx => (
-                            <tr key={tx.id} className="border-b">
-                              <td className="p-3 text-xs">{tx.displayDate}</td>
+                            <tr key={tx.id} className="border-b hover:bg-gray-50 transition-colors">
+                              <td className="p-3 text-xs">{tx.displayDate || tx.timestamp}</td>
                               <td className="p-3 text-xs font-mono">{tx.id}</td>
                               <td className="p-3"><span className={`px-2 py-1 text-[10px] font-bold rounded ${tx.method === 'CASH' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>{tx.method}</span></td>
                               <td className="p-3 font-bold">{tx.total.toLocaleString('id-ID')}</td>
@@ -521,17 +563,17 @@ export default function App() {
                 <h2 className="font-bold text-lg leading-tight">Total Tagihan</h2>
                 <div className="text-2xl font-black text-[#8b5a2b]">Rp {cartTotal.toLocaleString('id-ID')}</div>
               </div>
-              <button onClick={() => setShowCheckout(false)} className="w-10 h-10 bg-gray-200 rounded-full flex items-center justify-center font-bold text-gray-600 hover:bg-gray-300">✕</button>
+              <button onClick={() => setShowCheckout(false)} className="w-10 h-10 bg-gray-200 rounded-full flex items-center justify-center font-bold text-gray-600 hover:bg-gray-300 transition-colors">✕</button>
             </div>
 
             <div className="p-5 flex-1 overflow-y-auto">
               {/* STEP 1: PILIH METODE */}
               {checkoutStep === 'select' && (
                 <div className="grid grid-cols-2 gap-4">
-                  <button onClick={() => startCheckout('CASH')} className="flex flex-col items-center justify-center gap-3 bg-white hover:bg-green-50 text-green-700 border-2 border-green-200 hover:border-green-500 p-6 rounded-xl transition-all">
+                  <button onClick={() => startCheckout('CASH')} className="flex flex-col items-center justify-center gap-3 bg-white hover:bg-green-50 text-green-700 border-2 border-green-200 hover:border-green-500 p-6 rounded-xl transition-all shadow-sm">
                     <span className="text-3xl">💵</span><span className="font-black text-lg">CASH</span>
                   </button>
-                  <button onClick={() => startCheckout('QRIS')} className="flex flex-col items-center justify-center gap-3 bg-white hover:bg-blue-50 text-blue-700 border-2 border-blue-200 hover:border-blue-500 p-6 rounded-xl transition-all">
+                  <button onClick={() => startCheckout('QRIS')} className="flex flex-col items-center justify-center gap-3 bg-white hover:bg-blue-50 text-blue-700 border-2 border-blue-200 hover:border-blue-500 p-6 rounded-xl transition-all shadow-sm">
                     <span className="text-3xl">📱</span><span className="font-black text-lg">QRIS</span>
                   </button>
                 </div>
@@ -545,14 +587,14 @@ export default function App() {
                     type="text" 
                     value={cashAmount} 
                     onChange={(e) => setCashAmount(e.target.value)}
-                    className="w-full text-center text-3xl font-black p-4 border-2 border-gray-300 rounded-xl focus:border-green-500 focus:outline-none"
+                    className="w-full text-center text-3xl font-black p-4 border-2 border-gray-300 rounded-xl focus:border-green-500 focus:outline-none bg-gray-50"
                     placeholder="0"
                   />
                   <div className="grid grid-cols-2 gap-2 mt-2">
-                    <button onClick={() => setCashAmount(cartTotal.toString())} className="bg-gray-100 p-3 rounded-lg font-bold text-gray-700 border border-gray-200 active:bg-gray-200">Uang Pas</button>
-                    <button onClick={() => setCashAmount('100000')} className="bg-gray-100 p-3 rounded-lg font-bold text-gray-700 border border-gray-200 active:bg-gray-200">100.000</button>
-                    <button onClick={() => setCashAmount('50000')} className="bg-gray-100 p-3 rounded-lg font-bold text-gray-700 border border-gray-200 active:bg-gray-200">50.000</button>
-                    <button onClick={() => setCashAmount('20000')} className="bg-gray-100 p-3 rounded-lg font-bold text-gray-700 border border-gray-200 active:bg-gray-200">20.000</button>
+                    <button onClick={() => setCashAmount(cartTotal.toString())} className="bg-gray-100 p-3 rounded-lg font-bold text-gray-700 border border-gray-200 hover:bg-gray-200 transition-colors">Uang Pas</button>
+                    <button onClick={() => setCashAmount('100000')} className="bg-gray-100 p-3 rounded-lg font-bold text-gray-700 border border-gray-200 hover:bg-gray-200 transition-colors">100.000</button>
+                    <button onClick={() => setCashAmount('50000')} className="bg-gray-100 p-3 rounded-lg font-bold text-gray-700 border border-gray-200 hover:bg-gray-200 transition-colors">50.000</button>
+                    <button onClick={() => setCashAmount('20000')} className="bg-gray-100 p-3 rounded-lg font-bold text-gray-700 border border-gray-200 hover:bg-gray-200 transition-colors">20.000</button>
                   </div>
 
                   {/* Kalkulator Kembalian */}
@@ -566,7 +608,7 @@ export default function App() {
                   <button 
                     onClick={handleCashSubmit}
                     disabled={(parseInt(cashAmount.replace(/\D/g, ''))||0) < cartTotal}
-                    className="w-full bg-green-600 disabled:bg-gray-300 text-white py-4 rounded-xl font-bold text-lg active:scale-95 transition-all mt-4"
+                    className="w-full bg-green-600 disabled:bg-gray-300 text-white py-4 rounded-xl font-bold text-lg active:scale-95 transition-all mt-4 shadow-md"
                   >
                     SELESAIKAN & CETAK STRUK
                   </button>
@@ -643,7 +685,7 @@ export default function App() {
           {receiptConfig.socialMedia && (
             <p className="mt-2">{receiptConfig.socialMedia}</p>
           )}
-          <p className="mt-2 text-white">.</p> {/* Spacer bawah kertas */}
+          <p className="mt-2 text-white">.</p> {/* Spacer bawah kertas supaya putusnya pas */}
         </div>
       </div>
 
