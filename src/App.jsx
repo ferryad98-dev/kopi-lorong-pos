@@ -68,9 +68,23 @@ function normalizeMenu(m) {
   };
 }
 
-// Generator ID transaksi (di luar komponen supaya tidak dianggap efek samping render)
-function generateTxId() {
-  return `KL-${Math.floor(100000 + Math.random() * 900000)}`;
+// Generator ID transaksi: KL-YYMMDD-NNN (tanggal + urutan harian, mudah dibaca & rapi)
+// Server tetap memvalidasi saat menyimpan — dipakai apa adanya jika bebas, jika dobel
+// server memberi nomor berikutnya dan app mengadopsi nomor resmi itu saat sinkron.
+function generateTxId(existingTx) {
+  const now = new Date();
+  const dayKey = String(now.getFullYear()).slice(-2)
+    + String(now.getMonth() + 1).padStart(2, '0')
+    + String(now.getDate()).padStart(2, '0');
+  const prefix = `KL-${dayKey}-`;
+  let max = 0;
+  (existingTx || []).forEach(t => {
+    if (typeof t.id === 'string' && t.id.startsWith(prefix)) {
+      const n = parseInt(t.id.slice(prefix.length), 10);
+      if (!isNaN(n) && n > max) max = n;
+    }
+  });
+  return prefix + String(max + 1).padStart(3, '0');
 }
 
 export default function App() {
@@ -88,6 +102,7 @@ export default function App() {
   // === SINKRONISASI CLOUD (multi-device via Google Sheets) ===
   const [cloudStatus, setCloudStatus] = useState('idle'); // 'idle' | 'saving' | 'ok' | 'err'
   const [lastSyncAt, setLastSyncAt] = useState(null);
+  const [backendOld, setBackendOld] = useState(false); // true = Apps Script belum versi sync (v3+)
 
   // Ref: salinan state terbaru (aman dipakai di interval/polling tanpa closure basi)
   const menuItemsRef = useRef(menuItems);
@@ -124,13 +139,64 @@ export default function App() {
     }
   };
 
-  // Tarik SEMUA data dari cloud, lalu terapkan dengan aman:
-  //  - menu/struk: hanya kalau tidak ada edit lokal yang belum terkirim
-  //  - transaksi: digabung (tidak dobel, tidak hilang)
+  // Gabungkan transaksi server → lokal:
+  //  - buang "baris hantu" sisa bug mismatch backend lama (total 0 tanpa metode/detail)
+  //  - adopsi ID resmi dari server (server bisa mengganti ID bila dobel / renumber)
+  //  - tambahkan transaksi server yang belum ada di lokal (tanpa dobel)
+  const mergeServerTx = (serverTx) => {
+    const server = (Array.isArray(serverTx) ? serverTx : []).filter(t => t && t.id);
+    const serverById = new Map(server.map(t => [t.id, t]));
+
+    let local = (transactionsRef.current || []).filter(t =>
+      !(Number(t.total) === 0 && !t.method && !t.itemsString) // ghost lokal dibuang
+    );
+    local = local.map(t => {
+      if (serverById.has(t.id)) return { ...t, ...serverById.get(t.id) }; // versi resmi menang
+      // ID beda tapi waktu & total sama → transaksi yang sama (ID direnumber server) → pakai versi server
+      const ms = t.timestamp ? Date.parse(t.timestamp) : NaN;
+      if (!isNaN(ms)) {
+        const match = server.find(s => s.ts === ms && Number(s.total) === Number(t.total));
+        if (match) return { ...t, ...match };
+      }
+      return t;
+    });
+
+    const localIds = new Set(local.map(t => t.id));
+    const newOnes = server
+      .filter(t => !localIds.has(t.id))
+      .map(t => ({ ...t, total: Number(t.total) || 0 }));
+
+    let merged = [...local, ...newOnes];
+    const seen = new Set();
+    merged = merged.filter(t => { if (!t.id || seen.has(t.id)) return false; seen.add(t.id); return true; });
+    merged.sort((a, b) => (b.ts || Date.parse(b.timestamp) || 0) - (a.ts || Date.parse(a.timestamp) || 0));
+
+    if (JSON.stringify(merged) !== JSON.stringify(transactionsRef.current)) {
+      transactionsRef.current = merged;
+      setTransactions(merged);
+    }
+    return { added: newOnes.length, total: merged.length };
+  };
+
+  // Tarik data dari cloud. Backend baru (v3+) → sinkron penuh.
+  // Backend LAMA → HANYA gabung transaksi, TIDAK mengirim apa pun otomatis
+  // (mencegah baris hantu seperti yang pernah terjadi).
   const pullCloud = async () => {
     const res = await fetch(URL_SHEET + '?action=bootstrap');
     const data = await res.json();
     if (!data || data.status !== 'ok') throw new Error('Respon server tidak dikenal');
+
+    const serverTx = Array.isArray(data.transactions) ? data.transactions : [];
+
+    // Deteksi kemampuan backend: backend baru selalu menyertakan kunci 'menu'
+    if (!('menu' in data)) {
+      setBackendOld(true);
+      const r = mergeServerTx(serverTx);
+      setCloudStatus('ok');
+      setLastSyncAt(Date.now());
+      return { ...r, oldBackend: true };
+    }
+    setBackendOld(false);
 
     // --- MENU (termasuk stok) ---
     if (Array.isArray(data.menu) && data.menu.length > 0) {
@@ -148,7 +214,7 @@ export default function App() {
     }
 
     // --- SETINGAN STRUK ---
-    if (data.receipt) {
+    if (data.receipt !== null && data.receipt !== undefined) {
       if (!receiptDirtyRef.current) {
         const serverReceipt = {
           address: String(data.receipt.address || ''),
@@ -163,21 +229,12 @@ export default function App() {
           setReceiptConfig(serverReceipt);
         }
       }
-    } else {
+    } else if (data.receipt === null) {
       await pushCloud('saveReceipt', { receipt: receiptRef.current });
     }
 
-    // --- TRANSAKSI (gabungkan, tanpa dobel) ---
-    const serverTx = Array.isArray(data.transactions) ? data.transactions : [];
-    const localIds = new Set(transactionsRef.current.map(t => t.id));
-    const newOnes = serverTx
-      .filter(t => t && t.id && !localIds.has(t.id))
-      .map(t => ({ ...t, total: Number(t.total) || 0 }));
-    if (newOnes.length > 0) {
-      const merged = [...transactionsRef.current, ...newOnes].sort((a, b) => (b.ts || 0) - (a.ts || 0));
-      transactionsRef.current = merged;
-      setTransactions(merged);
-    }
+    // --- TRANSAKSI ---
+    const r = mergeServerTx(serverTx);
 
     // Coba kirim ulang perubahan lokal yang sempat gagal (misal tadi offline)
     if (menuDirtyRef.current) {
@@ -191,7 +248,7 @@ export default function App() {
 
     setCloudStatus('ok');
     setLastSyncAt(Date.now());
-    return { txCount: serverTx.length, newCount: newOnes.length };
+    return r;
   };
 
   // AUTO-SAVE LOKAL + KIRIM CLOUD: menu & stok (ditunda 2,5 dtk biar tidak spam saat mengetik)
@@ -234,17 +291,14 @@ export default function App() {
   // SINKRON AWAL + POLLING TIAP 30 DETIK + TARIK SAAT TAB DIBUKA LAGI
   // (ini yang bikin pindah device terasa realtime: device lain menjual → stok & laporan di sini ikut berubah)
   useEffect(() => {
-    pullCloud().catch(e => { console.error('Sinkron awal gagal:', e); setCloudStatus('err'); });
-    const iv = setInterval(() => {
-      pullCloud().catch(e => { console.error('Polling gagal:', e); setCloudStatus('err'); });
-    }, 30000);
+    const doPull = () => pullCloud().catch(e => { console.error('Sinkron gagal:', e); setCloudStatus('err'); });
+    const t = setTimeout(doPull, 0); // tarik pertama
+    const iv = setInterval(doPull, 30000);
     const onVisible = () => {
-      if (document.visibilityState === 'visible') {
-        pullCloud().catch(() => setCloudStatus('err'));
-      }
+      if (document.visibilityState === 'visible') doPull();
     };
     document.addEventListener('visibilitychange', onVisible);
-    return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVisible); };
+    return () => { clearTimeout(t); clearInterval(iv); document.removeEventListener('visibilitychange', onVisible); };
     // sengaja deps kosong: cukup sekali di mount — pullCloud bekerja lewat ref, tidak basi
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -329,7 +383,7 @@ export default function App() {
   };
 
   const finalizeTransaction = async (method, cash, change) => {
-    const txId = generateTxId();
+    const txId = generateTxId(transactions);
     const txDate = new Date();
 
     const newTx = {
@@ -382,14 +436,18 @@ export default function App() {
     setSyncStatus('Menarik data...');
     try {
       const r = await pullCloud();
-      setSyncStatus(r.newCount > 0
-        ? `Berhasil ✓ (+${r.newCount} transaksi dari web)`
-        : 'Berhasil ✓ (sudah sinkron)');
+      if (r.oldBackend) {
+        setSyncStatus('⚠️ Backend lama — hanya transaksi yang disinkron. Update Code.gs!');
+      } else {
+        setSyncStatus(r.added > 0
+          ? `Berhasil ✓ (+${r.added} transaksi dari web)`
+          : 'Berhasil ✓ (sudah sinkron)');
+      }
     } catch (e) {
       console.error(e);
       setSyncStatus('Gagal ✕ (cek koneksi / deployment Apps Script)');
     }
-    setTimeout(() => setSyncStatus(''), 3500);
+    setTimeout(() => setSyncStatus(''), 4000);
   };
 
   // Geser tanggal laporan (untuk tombol ◀ / ▶)
@@ -481,6 +539,14 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {/* PERINGATAN: backend Apps Script belum versi sync — muncul otomatis kalau perlu */}
+      {backendOld && (
+        <div className="bg-amber-100 border-b border-amber-300 text-amber-900 text-xs font-bold px-4 py-2 print-hidden">
+          ⚠️ Apps Script masih versi lama — menu/stok/struk belum tersinkron ke Google Sheets.
+          Ganti isi file Code di Apps Script dengan Code.gs terbaru, lalu Deploy → New version (URL tetap sama).
+        </div>
+      )}
 
       {/* =======================================
           MODE KASIR (POS)
