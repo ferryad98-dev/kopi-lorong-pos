@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import logo from './assets/logo.png';
 
 // Data Menu Bawaan (Hanya dipakai jika memori HP masih kosong)
 const INITIAL_MENU = [
@@ -308,7 +309,7 @@ export default function App() {
       {/* HEADER UTAMA */}
       <header className="bg-[#2b1b17] text-white p-4 shadow-md flex items-center justify-between z-10 print-hidden">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center font-bold text-[#2b1b17]">KL</div>
+          <img src={logo} alt="Logo Kopi Lorong" className="w-10 h-10 rounded-full object-cover ring-2 ring-[#8b5a2b]/70 shadow-md bg-[#252120]" />
           <h1 className="text-xl font-bold tracking-wider">KOPI LORONG</h1>
         </div>
         <button 
